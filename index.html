@@ -181,6 +181,13 @@
   }
   .recipe-chip button.del:hover{color:var(--danger);}
   .recipe-chip button.del:focus-visible{outline:2px solid var(--accent);}
+  .recipe-chip button.edit{
+    position:absolute;top:6px;right:28px;
+    background:transparent;border:none;color:var(--text-dim);
+    cursor:pointer;font-size:14px;line-height:1;padding:4px;border-radius:50%;
+  }
+  .recipe-chip button.edit:hover{color:var(--mustard-text);}
+  .recipe-chip button.edit:focus-visible{outline:2px solid var(--accent);}
 
   .status-line{font-size:12px;color:var(--text-dim);margin-top:8px;min-height:16px;}
   .empty{color:var(--text-dim);font-size:14px;font-style:italic;}
@@ -312,6 +319,27 @@
   </div>
 </div>
 
+<div class="modal-overlay hidden" id="editOverlay">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+    <div class="modal-head">
+      <h3 class="modal-title" id="editTitle">Modifier la recette</h3>
+      <button class="modal-close" id="editClose" type="button" aria-label="Fermer">×</button>
+    </div>
+    <form id="editForm" style="display:flex;flex-direction:column;gap:10px;">
+      <input type="text" id="editName" placeholder="Nom du repas" required
+             style="background:var(--bg);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:var(--radius-s);font-family:'Nunito',sans-serif;font-size:14px;">
+      <input type="text" id="editTags" placeholder="Tags (ex: rapide, kids ok)"
+             style="background:var(--bg);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:var(--radius-s);font-family:'Nunito',sans-serif;font-size:14px;">
+      <input type="number" id="editTime" placeholder="Min" min="0"
+             style="background:var(--bg);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:var(--radius-s);font-family:'Nunito',sans-serif;font-size:14px;">
+      <textarea id="editIngredients" rows="3" placeholder="Ingrédients avec quantités, séparés par une virgule"
+                style="background:var(--bg);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:var(--radius-s);font-family:'Nunito',sans-serif;font-size:14px;resize:vertical;"></textarea>
+      <button class="add-btn" type="submit">Enregistrer</button>
+    </form>
+    <p class="status-line" id="editStatus"></p>
+  </div>
+</div>
+
 <script>
 const DAY_NAMES = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"];
 const RECIPES_KEY = "recipes";
@@ -404,12 +432,32 @@ function cloudGet(key){
 
 // Writes use no-cors: the browser can't read the response, but the request
 // still reaches and runs on the server, which is all a save needs.
-async function cloudSet(key, value){
-  await fetch(BACKEND_URL, {
-    method: "POST",
-    mode: "no-cors",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ key, value, code: getStoredAccessCode() })
+function cloudSet(key, value){
+  return new Promise((resolve, reject) => {
+    const callbackName = "cb_" + Math.random().toString(36).slice(2);
+    const timeoutId = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 8000);
+
+    function cleanup(){
+      clearTimeout(timeoutId);
+      delete window[callbackName];
+      if(script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[callbackName] = (data) => {
+      cleanup();
+      if(!data || data.error){ reject(new Error((data && data.error) || "unknown")); return; }
+      resolve(true);
+    };
+
+    const code = getStoredAccessCode();
+    const script = document.createElement("script");
+    script.src = BACKEND_URL
+      + "?key=" + encodeURIComponent(key)
+      + "&value=" + encodeURIComponent(value)
+      + "&code=" + encodeURIComponent(code)
+      + "&callback=" + callbackName;
+    script.onerror = () => { cleanup(); reject(new Error("script load error")); };
+    document.body.appendChild(script);
   });
 }
 
@@ -750,6 +798,14 @@ function renderRecipeList(){
       chip.appendChild(used);
     }
 
+    const editBtn = document.createElement("button");
+    editBtn.className = "edit";
+    editBtn.type = "button";
+    editBtn.setAttribute("aria-label", "Modifier " + rec.name);
+    editBtn.textContent = "✎";
+    editBtn.addEventListener("click", () => openEdit(rec));
+    chip.appendChild(editBtn);
+
     const del = document.createElement("button");
     del.className = "del";
     del.type = "button";
@@ -815,6 +871,49 @@ const checklistBody = document.getElementById("checklistBody");
 const checklistStatus = document.getElementById("checklistStatus");
 const checklistToggleAll = document.getElementById("checklistToggleAll");
 const checklistClose = document.getElementById("checklistClose");
+
+// --- Edit recipe modal ---
+let currentEditRecipeId = null;
+const editOverlay = document.getElementById("editOverlay");
+const editForm = document.getElementById("editForm");
+const editClose = document.getElementById("editClose");
+const editStatus = document.getElementById("editStatus");
+
+function openEdit(rec){
+  currentEditRecipeId = rec.id;
+  document.getElementById("editName").value = rec.name || "";
+  document.getElementById("editTags").value = rec.tags || "";
+  document.getElementById("editTime").value = rec.time || "";
+  document.getElementById("editIngredients").value = (rec.ingredients || []).join(", ");
+  editStatus.textContent = "";
+  editOverlay.classList.remove("hidden");
+  document.getElementById("editName").focus();
+}
+function closeEdit(){
+  editOverlay.classList.add("hidden");
+  currentEditRecipeId = null;
+}
+editClose.addEventListener("click", closeEdit);
+editOverlay.addEventListener("click", (e) => { if(e.target === editOverlay) closeEdit(); });
+
+editForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = document.getElementById("editName").value.trim();
+  if(!name || !currentEditRecipeId) return;
+  const tags = document.getElementById("editTags").value.trim();
+  const time = document.getElementById("editTime").value ? parseInt(document.getElementById("editTime").value, 10) : null;
+  const ingredients = document.getElementById("editIngredients").value
+    .split(",").map(s => s.trim()).filter(Boolean);
+
+  recipes = recipes.map(r => r.id === currentEditRecipeId
+    ? { ...r, name, tags, time, ingredients }
+    : r);
+
+  editStatus.textContent = "Enregistrement…";
+  await saveRecipes();
+  closeEdit();
+  render();
+});
 
 function openChecklist(rec){
   if(!rec) return;
@@ -889,6 +988,7 @@ checklistClose.addEventListener("click", closeChecklist);
 checklistOverlay.addEventListener("click", (e) => { if(e.target === checklistOverlay) closeChecklist(); });
 document.addEventListener("keydown", (e) => {
   if(e.key === "Escape" && !checklistOverlay.classList.contains("hidden")) closeChecklist();
+  if(e.key === "Escape" && !editOverlay.classList.contains("hidden")) closeEdit();
 });
 
 document.getElementById("startDate").addEventListener("change", async (e) => {
